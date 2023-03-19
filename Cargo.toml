@@ -11,6 +11,6 @@ categories = ["encoding"]
 
 [dependencies]
 base64 = "0.21"
-flate2 = "1.0"
+flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 rmp-serde = "1.1"
 url = "2.3"

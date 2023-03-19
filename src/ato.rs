@@ -1,15 +1,18 @@
-//! A decoder for Attempt This Online code share links.
+//! A decoder and encoder for Attempt This Online code share links.
 //!
 //! Supports schema versions 0 and 1, and is based on the implementation as of
 //! commit [64ee9f3](https://github.com/attempt-this-online/attempt-this-online/blob/64ee9f32de8328455a3da6f0d348105a78acaa7e/frontend/lib/urls.ts)
 //! (2023-03-19).
 
-use std::io;
+use std::io::{self, Read};
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, DecodeError, Engine};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
-use flate2::bufread::DeflateDecoder;
-use url::{ParseError, Url};
+use flate2::{
+    bufread::{DeflateDecoder, DeflateEncoder},
+    Compression,
+};
+use url::Url;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Data {
@@ -26,113 +29,172 @@ pub struct Data {
     pub input_encoding: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Schema {
     V0,
+    #[default]
     V1,
 }
 
 #[derive(Debug)]
-pub enum Error {
-    Url(ParseError),
+pub enum DecodeError {
+    Url(url::ParseError),
     InvalidKey(String),
     MultipleVersions,
     NoQuery,
-    Base64(DecodeError),
+    Base64(base64::DecodeError),
     Deflate(io::Error),
     MessagePack(rmp_serde::decode::Error),
 }
 
+#[derive(Debug)]
+pub enum EncodeError {
+    MessagePack(rmp_serde::encode::Error),
+    Deflate(io::Error),
+}
+
 impl Data {
     /// Decode an Attempt This Online sandbox share link.
-    pub fn decode(url: &str) -> Result<Self, Error> {
-        let u = Url::parse(url).map_err(Error::Url)?;
+    pub fn decode(url: &str) -> Result<Self, DecodeError> {
+        let u = Url::parse(url).map_err(DecodeError::Url)?;
         let mut schema_data = None;
         for (key, value) in u.query_pairs() {
             let scheme = match &*key {
                 "0" => Schema::V0,
                 "1" => Schema::V1,
-                _ => return Err(Error::InvalidKey(key.into_owned())),
+                _ => return Err(DecodeError::InvalidKey(key.into_owned())),
             };
             if schema_data.is_some() {
                 // ATO chooses the maximum version, when multiple are provided,
                 // but that should never be generated.
-                return Err(Error::MultipleVersions);
+                return Err(DecodeError::MultipleVersions);
             }
             schema_data = Some((scheme, value));
         }
-        let (schema, data) = schema_data.ok_or(Error::NoQuery)?;
+        let (schema, data) = schema_data.ok_or(DecodeError::NoQuery)?;
+
+        let b = URL_SAFE_NO_PAD.decode(&*data)?;
+        let z = DeflateDecoder::new(&*b);
         match schema {
-            Schema::V0 => Data::decode_v0(&data),
-            Schema::V1 => Data::decode_v1(&data),
+            Schema::V0 => {
+                let data: [String; 9] = rmp_serde::from_read(z)?;
+                let [language, header, header_encoding, code, code_encoding, footer, footer_encoding, input, input_encoding] =
+                    data;
+                Ok(Data {
+                    language,
+                    options: String::new(),
+                    header,
+                    header_encoding,
+                    code,
+                    code_encoding,
+                    footer,
+                    footer_encoding,
+                    program_arguments: String::new(),
+                    input,
+                    input_encoding,
+                })
+            }
+            Schema::V1 => {
+                let data: [String; 11] = rmp_serde::from_read(z)?;
+                let [language, options, header, header_encoding, code, code_encoding, footer, footer_encoding, program_arguments, input, input_encoding] =
+                    data;
+                Ok(Data {
+                    language,
+                    options,
+                    header,
+                    header_encoding,
+                    code,
+                    code_encoding,
+                    footer,
+                    footer_encoding,
+                    program_arguments,
+                    input,
+                    input_encoding,
+                })
+            }
         }
     }
 
-    fn decode_v0(data: &str) -> Result<Self, Error> {
-        let b = URL_SAFE_NO_PAD.decode(data)?;
-        let z = DeflateDecoder::new(&*b);
-        let data: [String; 9] = rmp_serde::from_read(z)?;
-        let [language, header, header_encoding, code, code_encoding, footer, footer_encoding, input, input_encoding] =
-            data;
-        Ok(Data {
-            language,
-            options: String::new(),
-            header,
-            header_encoding,
-            code,
-            code_encoding,
-            footer,
-            footer_encoding,
-            program_arguments: String::new(),
-            input,
-            input_encoding,
-        })
-    }
+    /// Encode an Attempt This Online sandbox share link.
+    pub fn encode(&self, schema: Schema, compression: Compression) -> Result<String, EncodeError> {
+        let mp = match schema {
+            Schema::V0 => rmp_serde::to_vec(&[
+                &self.language,
+                &self.header,
+                &self.header_encoding,
+                &self.code,
+                &self.code_encoding,
+                &self.footer,
+                &self.footer_encoding,
+                &self.input,
+                &self.input_encoding,
+            ])?,
+            Schema::V1 => rmp_serde::to_vec(&[
+                &self.language,
+                &self.options,
+                &self.header,
+                &self.header_encoding,
+                &self.code,
+                &self.code_encoding,
+                &self.footer,
+                &self.footer_encoding,
+                &self.program_arguments,
+                &self.input,
+                &self.input_encoding,
+            ])?,
+        };
 
-    fn decode_v1(data: &str) -> Result<Self, Error> {
-        let b = URL_SAFE_NO_PAD.decode(data)?;
-        let z = DeflateDecoder::new(&*b);
-        let data: [String; 11] = rmp_serde::from_read(z)?;
-        let [language, options, header, header_encoding, code, code_encoding, footer, footer_encoding, program_arguments, input, input_encoding] =
-            data;
-        Ok(Data {
-            language,
-            options,
-            header,
-            header_encoding,
-            code,
-            code_encoding,
-            footer,
-            footer_encoding,
-            program_arguments,
-            input,
-            input_encoding,
-        })
+        let mut z = DeflateEncoder::new(&*mp, compression);
+        let mut d = Vec::new();
+        z.read_to_end(&mut d)?;
+
+        let mut b = URL_SAFE_NO_PAD.encode(&d);
+
+        match schema {
+            Schema::V0 => b.insert_str(0, "0="),
+            Schema::V1 => b.insert_str(0, "1="),
+        }
+        let mut u = Url::parse("https://ato.pxeger.com/run").unwrap();
+        u.set_query(Some(&b));
+        Ok(u.to_string())
     }
 }
 
-impl From<ParseError> for Error {
+impl From<url::ParseError> for DecodeError {
     #[inline]
-    fn from(err: ParseError) -> Self {
-        Error::Url(err)
+    fn from(err: url::ParseError) -> Self {
+        DecodeError::Url(err)
     }
 }
-impl From<DecodeError> for Error {
+impl From<base64::DecodeError> for DecodeError {
     #[inline]
-    fn from(err: DecodeError) -> Self {
-        Error::Base64(err)
+    fn from(err: base64::DecodeError) -> Self {
+        DecodeError::Base64(err)
     }
 }
-impl From<io::Error> for Error {
+impl From<io::Error> for DecodeError {
     #[inline]
     fn from(err: io::Error) -> Self {
-        Error::Deflate(err)
+        DecodeError::Deflate(err)
     }
 }
-impl From<rmp_serde::decode::Error> for Error {
+impl From<rmp_serde::decode::Error> for DecodeError {
     #[inline]
     fn from(err: rmp_serde::decode::Error) -> Self {
-        Error::MessagePack(err)
+        DecodeError::MessagePack(err)
+    }
+}
+
+impl From<rmp_serde::encode::Error> for EncodeError {
+    #[inline]
+    fn from(err: rmp_serde::encode::Error) -> Self {
+        EncodeError::MessagePack(err)
+    }
+}
+impl From<io::Error> for EncodeError {
+    #[inline]
+    fn from(err: io::Error) -> Self {
+        EncodeError::Deflate(err)
     }
 }
 
@@ -158,6 +220,7 @@ mod tests {
             input_encoding: "utf-8".into(),
         };
         assert_eq!(data, Data::decode(url).unwrap());
+        assert_eq!(url, data.encode(Schema::V0, Compression::best()).unwrap());
     }
 
     #[test]
@@ -178,6 +241,7 @@ mod tests {
             input_encoding: "utf-8".into(),
         };
         assert_eq!(data, Data::decode(url).unwrap());
+        assert_eq!(url, data.encode(Schema::V1, Compression::best()).unwrap());
 
         // A link with code encoded in SBCS
         let url = "https://ato.pxeger.com/run?1=m700KzUnp3LBgqWlJWm6FjfrHzXMedS47-GO7oc7ttu7WNgem3mq6cSSQ4sPbYo7Mu3hrh2emocWpkYf2npoA0jZzkVeWr5HFpycfGjJwx1NRxY-atxb5up6ctPDXQsPrXOv1jjacGjzo8bdh3YeWxsC1Pxo47pHDTMf7mwG2nJiqTGIvbuH6_CMxKN7Di1yqwRKLylOSi6GOmZ9tJIH0HH5CuH5RTkpSrFQYQA";
@@ -195,6 +259,7 @@ mod tests {
             input_encoding: "utf-8".into(),
         };
         assert_eq!(data, Data::decode(url).unwrap());
+        assert_eq!(url, data.encode(Schema::V1, Compression::best()).unwrap());
 
         // A link with code encoded in base-64
         let url = "https://ato.pxeger.com/run?1=NVDLTsMwALv3X9DWdBrhwCEoFYQsfZBW0BPK2i59QaKlpUt_hcsu45_4Cn6BFTFLvtiWJfvzlL_KPD8eT0O_u4LfPxmoqrzWNuKbBUJ40ZwJEUJ1LVEa3awQmRYX9KwavOiuZVWM5kgIWiOavs-eu4E-SO2UXmHFy1NHsW9IhwDB_hgkrQya3BJM3ICjeoN9QJP-besRdS6Asxdasxe8-9NEsxxDoKDDEuSGidlToHThPeriPlWMHyy1UpXYrbJ3pgRfTmzK9JyJcDoGGALqyY8Qx2vB4YElRNOGGYfZ9noXq9uvrTDlevU__3LDLw";
@@ -211,6 +276,7 @@ mod tests {
             input: "".into(),
             input_encoding: "utf-8".into(),
         };
-        assert_eq!(data, Data::decode(url).unwrap());
+        assert_eq!(data, Data::decode(url).unwrap(),);
+        assert_eq!(url, data.encode(Schema::V1, Compression::best()).unwrap());
     }
 }
