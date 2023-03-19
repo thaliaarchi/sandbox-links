@@ -1,0 +1,16 @@
+[package]
+name = "ato-links"
+version = "0.1.0"
+authors = ["Thalia Archibald"]
+edition = "2021"
+description = "A library for working with Attempt This Online code share links"
+repository = "https://github.com/thaliaarchi/ato-links"
+license = "GPL-3.0-or-later"
+keywords = ["attempt-this-online"]
+categories = ["encoding"]
+
+[dependencies]
+base64 = "0.21"
+flate2 = "1.0"
+rmp-serde = "1.1"
+url = "2.3"
