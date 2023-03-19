@@ -13,4 +13,5 @@ categories = ["encoding"]
 base64 = "0.21"
 flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 rmp-serde = "1.1"
+thiserror = "1.0"
 url = "2.3"

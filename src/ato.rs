@@ -12,6 +12,7 @@ use flate2::{
     bufread::{DeflateDecoder, DeflateEncoder},
     Compression,
 };
+use thiserror::Error;
 use url::Url;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,21 +37,30 @@ pub enum Schema {
     V1,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum DecodeError {
-    Url(url::ParseError),
+    #[error("URL parse: {0}")]
+    Url(#[from] url::ParseError),
+    #[error("invalid key `{0}` in query string")]
     InvalidKey(String),
+    #[error("multiple schema versions")]
     MultipleVersions,
+    #[error("no query string")]
     NoQuery,
-    Base64(base64::DecodeError),
-    Deflate(io::Error),
-    MessagePack(rmp_serde::decode::Error),
+    #[error("base-64 decode: {0}")]
+    Base64(#[from] base64::DecodeError),
+    #[error("DEFLATE decompress: {0}")]
+    Deflate(#[from] io::Error),
+    #[error("MessagePack deserialize: {0}")]
+    MessagePack(#[from] rmp_serde::decode::Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum EncodeError {
-    MessagePack(rmp_serde::encode::Error),
-    Deflate(io::Error),
+    #[error("MessagePack serialize: {0}")]
+    MessagePack(#[from] rmp_serde::encode::Error),
+    #[error("DEFLATE compress: {0}")]
+    Deflate(#[from] io::Error),
 }
 
 impl Data {
@@ -65,8 +75,8 @@ impl Data {
                 _ => return Err(DecodeError::InvalidKey(key.into_owned())),
             };
             if schema_data.is_some() {
-                // ATO chooses the maximum version, when multiple are provided,
-                // but that should never be generated.
+                // ATO chooses the maximum schema version, when multiple are
+                // provided, but that should never be generated.
                 return Err(DecodeError::MultipleVersions);
             }
             schema_data = Some((scheme, value));
@@ -157,44 +167,6 @@ impl Data {
         let mut u = Url::parse("https://ato.pxeger.com/run").unwrap();
         u.set_query(Some(&b));
         Ok(u.to_string())
-    }
-}
-
-impl From<url::ParseError> for DecodeError {
-    #[inline]
-    fn from(err: url::ParseError) -> Self {
-        DecodeError::Url(err)
-    }
-}
-impl From<base64::DecodeError> for DecodeError {
-    #[inline]
-    fn from(err: base64::DecodeError) -> Self {
-        DecodeError::Base64(err)
-    }
-}
-impl From<io::Error> for DecodeError {
-    #[inline]
-    fn from(err: io::Error) -> Self {
-        DecodeError::Deflate(err)
-    }
-}
-impl From<rmp_serde::decode::Error> for DecodeError {
-    #[inline]
-    fn from(err: rmp_serde::decode::Error) -> Self {
-        DecodeError::MessagePack(err)
-    }
-}
-
-impl From<rmp_serde::encode::Error> for EncodeError {
-    #[inline]
-    fn from(err: rmp_serde::encode::Error) -> Self {
-        EncodeError::MessagePack(err)
-    }
-}
-impl From<io::Error> for EncodeError {
-    #[inline]
-    fn from(err: io::Error) -> Self {
-        EncodeError::Deflate(err)
     }
 }
 
