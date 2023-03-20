@@ -17,6 +17,7 @@ use url::Url;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Data {
+    pub schema: Schema,
     pub language: String,
     pub options: String,
     pub header: String,
@@ -91,6 +92,7 @@ impl Data {
                 let [language, header, header_encoding, code, code_encoding, footer, footer_encoding, input, input_encoding] =
                     data;
                 Ok(Data {
+                    schema,
                     language,
                     options: String::new(),
                     header,
@@ -109,6 +111,7 @@ impl Data {
                 let [language, options, header, header_encoding, code, code_encoding, footer, footer_encoding, program_arguments, input, input_encoding] =
                     data;
                 Ok(Data {
+                    schema,
                     language,
                     options,
                     header,
@@ -126,8 +129,8 @@ impl Data {
     }
 
     /// Encode an Attempt This Online sandbox share link.
-    pub fn encode(&self, schema: Schema, compression: Compression) -> Result<String, EncodeError> {
-        let mp = match schema {
+    pub fn encode(&self) -> Result<String, EncodeError> {
+        let mp = match self.schema {
             Schema::V0 => rmp_serde::to_vec(&[
                 &self.language,
                 &self.header,
@@ -154,13 +157,13 @@ impl Data {
             ])?,
         };
 
-        let mut z = DeflateEncoder::new(&*mp, compression);
+        let mut z = DeflateEncoder::new(&*mp, Compression::best());
         let mut d = Vec::new();
         z.read_to_end(&mut d)?;
 
         let mut b = URL_SAFE_NO_PAD.encode(&d);
 
-        match schema {
+        match self.schema {
             Schema::V0 => b.insert_str(0, "0="),
             Schema::V1 => b.insert_str(0, "1="),
         }
@@ -175,10 +178,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decode_v0() {
+    fn roundtrip_v0() {
         // The only v0 link on Code Golf
+        // https://codegolf.stackexchange.com/questions/111613/pick-a-random-number-between-0-and-n-using-a-constant-source-of-randomness/229048#229048
         let url = "https://ato.pxeger.com/run?0=ZVI9T8MwEJUYw584YCCpWpRQPqoWWJjYGZEq1760Fo4d7AuImV_BxgJ_hxl-DRcnopFqyb7hvXfP7-z3r_qVNs5-lnAND58NlZPZz9SIaqUE2LkXVvFeY1pcXU2LbGRvbqbFovSughbjoqvaeRp10t-9_YgFEqQDaRl6HOpACp-TiEpnDErSzv7Dt66xhD5JjoAwEKBaI0gRMKm9tpT2eFqmRQal87AEbaG_Wp5lWZIoLKM2NbrSNAbNfBFNsnkCvLpOu2gEJeffmkTSjtFAw36t6gjuN5pDBBDGwB14rLBaoYeYs3odDgJVI6P6hInK2WOCR-teYMObHIc1sjGCEATUk2dhGuwtGAyRtBHEB4Lijl6vmrZZ610K7RdQIhr2RWwFQqmOr-3BIPzh9xtcH47710jlSfQJaTvAAatCEhNu9dSglRrDnCVKy-0zDIU8ijj24nR6dn5xORtDkefLPM-z7k98dOUP";
         let data = Data {
+            schema: Schema::V0,
             language: "python".into(),
             options: "".into(),
             header: "f = \\".into(),
@@ -192,14 +197,16 @@ mod tests {
             input_encoding: "utf-8".into(),
         };
         assert_eq!(data, Data::decode(url).unwrap());
-        assert_eq!(url, data.encode(Schema::V0, Compression::best()).unwrap());
+        assert_eq!(url, data.encode().unwrap());
     }
 
     #[test]
-    fn decode_v1() {
+    fn roundtrip_v1() {
         // A randomly selected v1 link from Code Golf
+        // https://codegolf.stackexchange.com/questions/233529/could-you-massage-this-stack-for-me/233580#233580
         let url = "https://ato.pxeger.com/run?1=m724qjhjWbSSbqpS7E07ZQVH25D8oNSS0qI8LmUFN1u3ovxcONfd1qW0ICczObEkFcgLtg0uTywAMiJsXYryC7jsMpeWlqTpWtwMS03OyFdQ0UjLL1KosLGxceQCsSoVNBJsMhM0NYAi7jEKjtZgaetqINfNWkOjQrdSU9MayAkGytVq1hTnF5VwwUxwi1GI0ISYvgBCrYxWMlTSUTJSil1qyGXEZQgRBQA";
         let data = Data {
+            schema: Schema::V1,
             language: "zsh".into(),
             options: "[\"-e\"]".into(),
             header: "# A=ToReturn\n# F=FromReturn\n# G=Duplicate\n# S=Swap\n# X=Drop\n>i".into(),
@@ -213,11 +220,13 @@ mod tests {
             input_encoding: "utf-8".into(),
         };
         assert_eq!(data, Data::decode(url).unwrap());
-        assert_eq!(url, data.encode(Schema::V1, Compression::best()).unwrap());
+        assert_eq!(url, data.encode().unwrap());
 
         // A link with code encoded in SBCS
+        // https://codegolf.stackexchange.com/questions/60443/s%e1%b4%8d%e1%b4%80%ca%9f%ca%9f-c%e1%b4%80%e1%b4%98%ea%9c%b1-c%e1%b4%8f%c9%b4%e1%b4%a0%e1%b4%87%ca%80%e1%b4%9b%e1%b4%87%ca%80/251892#251892
         let url = "https://ato.pxeger.com/run?1=m700KzUnp3LBgqWlJWm6FjfrHzXMedS47-GO7oc7ttu7WNgem3mq6cSSQ4sPbYo7Mu3hrh2emocWpkYf2npoA0jZzkVeWr5HFpycfGjJwx1NRxY-atxb5up6ctPDXQsPrXOv1jjacGjzo8bdh3YeWxsC1Pxo47pHDTMf7mwG2nJiqTGIvbuH6_CMxKN7Di1yqwRKLylOSi6GOmZ9tJIH0HH5CuH5RTkpSrFQYQA";
         let data = Data {
+            schema: Schema::V1,
             language: "jelly".into(),
             options: "".into(),
             header: "".into(),
@@ -231,11 +240,13 @@ mod tests {
             input_encoding: "utf-8".into(),
         };
         assert_eq!(data, Data::decode(url).unwrap());
-        assert_eq!(url, data.encode(Schema::V1, Compression::best()).unwrap());
+        assert_eq!(url, data.encode().unwrap());
 
         // A link with code encoded in base-64
+        // https://codegolf.stackexchange.com/questions/249373/draw-the-progress-pride-flag/249394#249394
         let url = "https://ato.pxeger.com/run?1=NVDLTsMwALv3X9DWdBrhwCEoFYQsfZBW0BPK2i59QaKlpUt_hcsu45_4Cn6BFTFLvtiWJfvzlL_KPD8eT0O_u4LfPxmoqrzWNuKbBUJ40ZwJEUJ1LVEa3awQmRYX9KwavOiuZVWM5kgIWiOavs-eu4E-SO2UXmHFy1NHsW9IhwDB_hgkrQya3BJM3ICjeoN9QJP-besRdS6Asxdasxe8-9NEsxxDoKDDEuSGidlToHThPeriPlWMHyy1UpXYrbJ3pgRfTmzK9JyJcDoGGALqyY8Qx2vB4YElRNOGGYfZ9noXq9uvrTDlevU__3LDLw";
         let data = Data {
+            schema: Schema::V1,
             language: "c_gcc".into(),
             options: "".into(),
             header: "".into(),
@@ -249,6 +260,6 @@ mod tests {
             input_encoding: "utf-8".into(),
         };
         assert_eq!(data, Data::decode(url).unwrap(),);
-        assert_eq!(url, data.encode(Schema::V1, Compression::best()).unwrap());
+        assert_eq!(url, data.encode().unwrap());
     }
 }
