@@ -1,7 +1,7 @@
 //! A decoder and encoder for Attempt This Online code share links.
 //!
 //! Supports schema versions 0 and 1, and is based on the implementation as of
-//! commit [64ee9f3](https://github.com/attempt-this-online/attempt-this-online/blob/64ee9f32de8328455a3da6f0d348105a78acaa7e/frontend/lib/urls.ts)
+//! commit [b694efd](https://github.com/attempt-this-online/attempt-this-online/blob/b694efd9cfaea87d93827e33ec7f5d812a431833/frontend/lib/urls.ts)
 //! (2023-03-19).
 
 use std::io::{self, BufRead, Read};
@@ -15,8 +15,8 @@ use flate2::{
 use thiserror::Error;
 use url::Url;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Data {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct State {
     pub schema: Schema,
     pub language: String,
     pub options: String,
@@ -46,8 +46,6 @@ pub enum DecodeError {
     InvalidKey(String),
     #[error("multiple schema versions")]
     MultipleVersions,
-    #[error("no query string")]
-    NoQuery,
     #[error("base-64 decode: {0}")]
     Base64(#[from] base64::DecodeError),
     #[error("DEFLATE decompress: {0}")]
@@ -64,41 +62,63 @@ pub enum EncodeError {
     Deflate(#[from] io::Error),
 }
 
-impl Data {
+impl State {
+    pub fn new() -> Self {
+        State::default()
+    }
+
     /// Decode an Attempt This Online share link.
     pub fn decode(url: &str) -> Result<Self, DecodeError> {
-        let (schema, data) = Data::decode_url(url)?;
-        Data::serialize_mp(schema, &*data)
+        let (data, language) = State::decode_url(url)?;
+        let mut state = match data {
+            Some((schema, data)) => State::serialize_mp(schema, &*data)?,
+            None => State::default(),
+        };
+        match language {
+            Some(l) if state.language.is_empty() => state.language = l,
+            _ => {}
+        }
+        Ok(state)
     }
 
     /// Encode an Attempt This Online share link.
     pub fn encode(&self) -> Result<String, EncodeError> {
         let mp = self.deserialize_mp()?;
-        Data::encode_url(self.schema, &*mp, Compression::best())
+        State::encode_url(self.schema, &*mp, Compression::best())
     }
 
     /// Decode and decompress an Attempt This Online share link.
-    fn decode_url(url: &str) -> Result<(Schema, Vec<u8>), DecodeError> {
+    fn decode_url(url: &str) -> Result<(Option<(Schema, Vec<u8>)>, Option<String>), DecodeError> {
         let u = Url::parse(url).map_err(DecodeError::Url)?;
-        let mut schema_data = None;
+        let mut data = None;
+        let mut language = None;
         for (key, value) in u.query_pairs() {
-            let scheme = match &*key {
+            let schema = match &*key {
                 "0" => Schema::V0,
                 "1" => Schema::V1,
+                "L" | "l" => {
+                    // See https://github.com/attempt-this-online/attempt-this-online/blob/b694efd9cfaea87d93827e33ec7f5d812a431833/frontend/pages/run.tsx#L237-L269
+                    language = Some(value.into_owned());
+                    continue;
+                }
                 _ => return Err(DecodeError::InvalidKey(key.into_owned())),
             };
-            if schema_data.is_some() {
+            if data.is_some() {
                 // ATO chooses the maximum schema version, when multiple are
                 // provided, but that should never be generated.
                 return Err(DecodeError::MultipleVersions);
             }
-            schema_data = Some((scheme, value));
+            data = Some((schema, value));
         }
-        let (schema, data) = schema_data.ok_or(DecodeError::NoQuery)?;
-        let compressed = URL_SAFE_NO_PAD.decode(&*data)?;
-        let mut buf = Vec::new();
-        DeflateDecoder::new(&*compressed).read_to_end(&mut buf)?;
-        Ok((schema, buf))
+        let data = if let Some((schema, data)) = data {
+            let compressed = URL_SAFE_NO_PAD.decode(&*data)?;
+            let mut buf = Vec::new();
+            DeflateDecoder::new(&*compressed).read_to_end(&mut buf)?;
+            Some((schema, buf))
+        } else {
+            None
+        };
+        Ok((data, language))
     }
 
     /// Encode and compress an Attempt This Online share link.
@@ -127,7 +147,7 @@ impl Data {
                 let data: [String; 9] = rmp_serde::from_read(data)?;
                 let [language, header, header_encoding, code, code_encoding, footer, footer_encoding, input, input_encoding] =
                     data;
-                Ok(Data {
+                Ok(State {
                     schema,
                     language,
                     options: String::new(),
@@ -146,7 +166,7 @@ impl Data {
                 let data: [String; 11] = rmp_serde::from_read(data)?;
                 let [language, options, header, header_encoding, code, code_encoding, footer, footer_encoding, program_arguments, input, input_encoding] =
                     data;
-                Ok(Data {
+                Ok(State {
                     schema,
                     language,
                     options,
@@ -204,7 +224,7 @@ mod tests {
         // The only v0 link on Code Golf
         // https://codegolf.stackexchange.com/questions/111613/pick-a-random-number-between-0-and-n-using-a-constant-source-of-randomness/229048#229048
         let url = "https://ato.pxeger.com/run?0=ZVI9T8MwEJUYw584YCCpWpRQPqoWWJjYGZEq1760Fo4d7AuImV_BxgJ_hxl-DRcnopFqyb7hvXfP7-z3r_qVNs5-lnAND58NlZPZz9SIaqUE2LkXVvFeY1pcXU2LbGRvbqbFovSughbjoqvaeRp10t-9_YgFEqQDaRl6HOpACp-TiEpnDErSzv7Dt66xhD5JjoAwEKBaI0gRMKm9tpT2eFqmRQal87AEbaG_Wp5lWZIoLKM2NbrSNAbNfBFNsnkCvLpOu2gEJeffmkTSjtFAw36t6gjuN5pDBBDGwB14rLBaoYeYs3odDgJVI6P6hInK2WOCR-teYMObHIc1sjGCEATUk2dhGuwtGAyRtBHEB4Lijl6vmrZZ610K7RdQIhr2RWwFQqmOr-3BIPzh9xtcH47710jlSfQJaTvAAatCEhNu9dSglRrDnCVKy-0zDIU8ijj24nR6dn5xORtDkefLPM-z7k98dOUP";
-        let data = Data {
+        let state = State {
             schema: Schema::V0,
             language: "python".into(),
             options: "".into(),
@@ -218,8 +238,8 @@ mod tests {
             input: "".into(),
             input_encoding: "utf-8".into(),
         };
-        assert_eq!(data, Data::decode(url).unwrap());
-        assert_eq!(url, data.encode().unwrap());
+        assert_eq!(state, State::decode(url).unwrap());
+        assert_eq!(url, state.encode().unwrap());
     }
 
     #[test]
@@ -227,7 +247,7 @@ mod tests {
         // A randomly selected v1 link from Code Golf
         // https://codegolf.stackexchange.com/questions/233529/could-you-massage-this-stack-for-me/233580#233580
         let url = "https://ato.pxeger.com/run?1=m724qjhjWbSSbqpS7E07ZQVH25D8oNSS0qI8LmUFN1u3ovxcONfd1qW0ICczObEkFcgLtg0uTywAMiJsXYryC7jsMpeWlqTpWtwMS03OyFdQ0UjLL1KosLGxceQCsSoVNBJsMhM0NYAi7jEKjtZgaetqINfNWkOjQrdSU9MayAkGytVq1hTnF5VwwUxwi1GI0ISYvgBCrYxWMlTSUTJSil1qyGXEZQgRBQA";
-        let data = Data {
+        let state = State {
             schema: Schema::V1,
             language: "zsh".into(),
             options: "[\"-e\"]".into(),
@@ -241,13 +261,13 @@ mod tests {
             input: "1\n2\n1".into(),
             input_encoding: "utf-8".into(),
         };
-        assert_eq!(data, Data::decode(url).unwrap());
-        assert_eq!(url, data.encode().unwrap());
+        assert_eq!(state, State::decode(url).unwrap());
+        assert_eq!(url, state.encode().unwrap());
 
         // A link with code encoded in SBCS
         // https://codegolf.stackexchange.com/questions/60443/s%e1%b4%8d%e1%b4%80%ca%9f%ca%9f-c%e1%b4%80%e1%b4%98%ea%9c%b1-c%e1%b4%8f%c9%b4%e1%b4%a0%e1%b4%87%ca%80%e1%b4%9b%e1%b4%87%ca%80/251892#251892
         let url = "https://ato.pxeger.com/run?1=m700KzUnp3LBgqWlJWm6FjfrHzXMedS47-GO7oc7ttu7WNgem3mq6cSSQ4sPbYo7Mu3hrh2emocWpkYf2npoA0jZzkVeWr5HFpycfGjJwx1NRxY-atxb5up6ctPDXQsPrXOv1jjacGjzo8bdh3YeWxsC1Pxo47pHDTMf7mwG2nJiqTGIvbuH6_CMxKN7Di1yqwRKLylOSi6GOmZ9tJIH0HH5CuH5RTkpSrFQYQA";
-        let data = Data {
+        let state = State {
             schema: Schema::V1,
             language: "jelly".into(),
             options: "".into(),
@@ -261,13 +281,13 @@ mod tests {
             input: "".into(),
             input_encoding: "utf-8".into(),
         };
-        assert_eq!(data, Data::decode(url).unwrap());
-        assert_eq!(url, data.encode().unwrap());
+        assert_eq!(state, State::decode(url).unwrap());
+        assert_eq!(url, state.encode().unwrap());
 
         // A link with code encoded in base-64
         // https://codegolf.stackexchange.com/questions/249373/draw-the-progress-pride-flag/249394#249394
         let url = "https://ato.pxeger.com/run?1=NVDLTsMwALv3X9DWdBrhwCEoFYQsfZBW0BPK2i59QaKlpUt_hcsu45_4Cn6BFTFLvtiWJfvzlL_KPD8eT0O_u4LfPxmoqrzWNuKbBUJ40ZwJEUJ1LVEa3awQmRYX9KwavOiuZVWM5kgIWiOavs-eu4E-SO2UXmHFy1NHsW9IhwDB_hgkrQya3BJM3ICjeoN9QJP-besRdS6Asxdasxe8-9NEsxxDoKDDEuSGidlToHThPeriPlWMHyy1UpXYrbJ3pgRfTmzK9JyJcDoGGALqyY8Qx2vB4YElRNOGGYfZ9noXq9uvrTDlevU__3LDLw";
-        let data = Data {
+        let state = State {
             schema: Schema::V1,
             language: "c_gcc".into(),
             options: "".into(),
@@ -281,8 +301,8 @@ mod tests {
             input: "".into(),
             input_encoding: "utf-8".into(),
         };
-        assert_eq!(data, Data::decode(url).unwrap(),);
-        assert_eq!(url, data.encode().unwrap());
+        assert_eq!(state, State::decode(url).unwrap(),);
+        assert_eq!(url, state.encode().unwrap());
     }
 
     #[test]
@@ -290,13 +310,18 @@ mod tests {
         let links = include_str!("../tests/ato_links.txt");
         let mut compression_differs = 0usize;
         for link in links.lines() {
-            let data = Data::decode(link).unwrap();
-            let encoded = data.encode().unwrap();
+            let state = State::decode(link).unwrap();
+            let encoded = state.encode().unwrap();
             if encoded != link {
-                compression_differs += 1;
-                let (_, decoded_raw) = Data::decode_url(link).unwrap();
-                let encoded_raw = data.deserialize_mp().unwrap();
-                assert_eq!(decoded_raw, encoded_raw);
+                let (data, language) = State::decode_url(link).unwrap();
+                if let Some((schema, decoded_raw)) = data {
+                    compression_differs += 1;
+                    let encoded_raw = state.deserialize_mp().unwrap();
+                    assert_eq!(state.schema, schema);
+                    assert_eq!(decoded_raw, encoded_raw);
+                } else if let Some(l) = language {
+                    assert_eq!(state.language, l);
+                }
             }
         }
         if compression_differs != 0 {
