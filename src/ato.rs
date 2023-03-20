@@ -4,7 +4,7 @@
 //! commit [64ee9f3](https://github.com/attempt-this-online/attempt-this-online/blob/64ee9f32de8328455a3da6f0d348105a78acaa7e/frontend/lib/urls.ts)
 //! (2023-03-19).
 
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -65,8 +65,20 @@ pub enum EncodeError {
 }
 
 impl Data {
-    /// Decode an Attempt This Online sandbox share link.
+    /// Decode an Attempt This Online share link.
     pub fn decode(url: &str) -> Result<Self, DecodeError> {
+        let (schema, data) = Data::decode_url(url)?;
+        Data::serialize_mp(schema, &*data)
+    }
+
+    /// Encode an Attempt This Online share link.
+    pub fn encode(&self) -> Result<String, EncodeError> {
+        let mp = self.deserialize_mp()?;
+        Data::encode_url(self.schema, &*mp, Compression::best())
+    }
+
+    /// Decode and decompress an Attempt This Online share link.
+    fn decode_url(url: &str) -> Result<(Schema, Vec<u8>), DecodeError> {
         let u = Url::parse(url).map_err(DecodeError::Url)?;
         let mut schema_data = None;
         for (key, value) in u.query_pairs() {
@@ -83,12 +95,36 @@ impl Data {
             schema_data = Some((scheme, value));
         }
         let (schema, data) = schema_data.ok_or(DecodeError::NoQuery)?;
+        let compressed = URL_SAFE_NO_PAD.decode(&*data)?;
+        let mut buf = Vec::new();
+        DeflateDecoder::new(&*compressed).read_to_end(&mut buf)?;
+        Ok((schema, buf))
+    }
 
-        let b = URL_SAFE_NO_PAD.decode(&*data)?;
-        let z = DeflateDecoder::new(&*b);
+    /// Encode and compress an Attempt This Online share link.
+    fn encode_url<R: BufRead>(
+        schema: Schema,
+        r: R,
+        level: Compression,
+    ) -> Result<String, EncodeError> {
+        let mut z = DeflateEncoder::new(r, level);
+        let mut d = Vec::new();
+        z.read_to_end(&mut d)?;
+        let mut b = URL_SAFE_NO_PAD.encode(&d);
+        match schema {
+            Schema::V0 => b.insert_str(0, "0="),
+            Schema::V1 => b.insert_str(0, "1="),
+        }
+        let mut u = Url::parse("https://ato.pxeger.com/run").unwrap();
+        u.set_query(Some(&b));
+        Ok(u.to_string())
+    }
+
+    /// Serialize as MessagePack format
+    fn serialize_mp(schema: Schema, data: &[u8]) -> Result<Self, DecodeError> {
         match schema {
             Schema::V0 => {
-                let data: [String; 9] = rmp_serde::from_read(z)?;
+                let data: [String; 9] = rmp_serde::from_read(data)?;
                 let [language, header, header_encoding, code, code_encoding, footer, footer_encoding, input, input_encoding] =
                     data;
                 Ok(Data {
@@ -107,7 +143,7 @@ impl Data {
                 })
             }
             Schema::V1 => {
-                let data: [String; 11] = rmp_serde::from_read(z)?;
+                let data: [String; 11] = rmp_serde::from_read(data)?;
                 let [language, options, header, header_encoding, code, code_encoding, footer, footer_encoding, program_arguments, input, input_encoding] =
                     data;
                 Ok(Data {
@@ -128,10 +164,10 @@ impl Data {
         }
     }
 
-    /// Encode an Attempt This Online sandbox share link.
-    pub fn encode(&self) -> Result<String, EncodeError> {
-        let mp = match self.schema {
-            Schema::V0 => rmp_serde::to_vec(&[
+    /// Deserialize from MessagePack format
+    fn deserialize_mp(&self) -> Result<Vec<u8>, EncodeError> {
+        match self.schema {
+            Schema::V0 => Ok(rmp_serde::to_vec(&[
                 &self.language,
                 &self.header,
                 &self.header_encoding,
@@ -141,8 +177,8 @@ impl Data {
                 &self.footer_encoding,
                 &self.input,
                 &self.input_encoding,
-            ])?,
-            Schema::V1 => rmp_serde::to_vec(&[
+            ])?),
+            Schema::V1 => Ok(rmp_serde::to_vec(&[
                 &self.language,
                 &self.options,
                 &self.header,
@@ -154,22 +190,8 @@ impl Data {
                 &self.program_arguments,
                 &self.input,
                 &self.input_encoding,
-            ])?,
-        };
-
-        let mut z = DeflateEncoder::new(&*mp, Compression::best());
-        let mut d = Vec::new();
-        z.read_to_end(&mut d)?;
-
-        let mut b = URL_SAFE_NO_PAD.encode(&d);
-
-        match self.schema {
-            Schema::V0 => b.insert_str(0, "0="),
-            Schema::V1 => b.insert_str(0, "1="),
+            ])?),
         }
-        let mut u = Url::parse("https://ato.pxeger.com/run").unwrap();
-        u.set_query(Some(&b));
-        Ok(u.to_string())
     }
 }
 
@@ -261,5 +283,24 @@ mod tests {
         };
         assert_eq!(data, Data::decode(url).unwrap(),);
         assert_eq!(url, data.encode().unwrap());
+    }
+
+    #[test]
+    fn roundtrip_all() {
+        let links = include_str!("../tests/ato_links.txt");
+        let mut compression_differs = 0usize;
+        for link in links.lines() {
+            let data = Data::decode(link).unwrap();
+            let encoded = data.encode().unwrap();
+            if encoded != link {
+                compression_differs += 1;
+                let (_, decoded_raw) = Data::decode_url(link).unwrap();
+                let encoded_raw = data.deserialize_mp().unwrap();
+                assert_eq!(decoded_raw, encoded_raw);
+            }
+        }
+        if compression_differs != 0 {
+            eprintln!("Compression differs for {compression_differs} links");
+        }
     }
 }
