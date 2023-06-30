@@ -1,17 +1,18 @@
 //! A decoder and encoder for Attempt This Online code share links.
 //!
 //! Supports schema versions 0 and 1, and is based on the implementation as of
-//! commit [b694efd](https://github.com/attempt-this-online/attempt-this-online/blob/b694efd9cfaea87d93827e33ec7f5d812a431833/frontend/lib/urls.ts)
-//! (2023-03-19).
+//! commit [b1e7ff3](https://github.com/attempt-this-online/attempt-this-online/blob/b1e7ff39c15afc8194d958b8c9bbc5c3ebcd5730/frontend/lib/urls.ts)
+//! (2023-06-30).
 
 use std::io::{self, BufRead, Read};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-
 use flate2::{
     bufread::{DeflateDecoder, DeflateEncoder},
     Compression,
 };
+use lazy_static::lazy_static;
+use regex::bytes::Regex;
 use thiserror::Error;
 use url::Url;
 
@@ -48,7 +49,7 @@ pub enum DecodeError {
     InvalidKey(String),
     #[error("multiple schema versions")]
     MultipleVersions,
-    #[error("base-64 decode: {0}")]
+    #[error("base64 decode: {0}")]
     Base64(#[from] base64::DecodeError),
     #[error("DEFLATE decompress: {0}")]
     Deflate(#[from] io::Error),
@@ -73,7 +74,7 @@ impl LinkState {
     pub fn decode(url: &str) -> Result<Self, DecodeError> {
         let (data, language) = LinkState::decode_url(url)?;
         let mut state = match data {
-            Some((schema, data)) => LinkState::serialize_mp(schema, &*data)?,
+            Some((schema, data)) => LinkState::deserialize_mp(schema, &*data)?,
             None => LinkState::default(),
         };
         match language {
@@ -85,7 +86,7 @@ impl LinkState {
 
     /// Encode an Attempt This Online share link.
     pub fn encode(&self) -> Result<String, EncodeError> {
-        let mp = self.deserialize_mp()?;
+        let mp = self.serialize_mp()?;
         LinkState::encode_url(self.schema, &*mp, Compression::best())
     }
 
@@ -115,7 +116,25 @@ impl LinkState {
             data = Some((schema, value));
         }
         let data = if let Some((schema, data)) = data {
-            let compressed = URL_SAFE_NO_PAD.decode(&*data)?;
+            // ATO's base64 decoding allows the URL-safe and standard alphabets,
+            // even with `+` and `-` or `/` and `_` intermixed. Any characters
+            // outside those alphabets, including `=`, are removed before
+            // decoding. See toUint8Array in https://github.com/dankogai/js-base64/blob/34cd9344dae428adbde8084e28339a591bbdf7e5/base64.ts#L201
+            let compressed = match URL_SAFE_NO_PAD.decode(&*data) {
+                Ok(data) => data,
+                Err(_) => {
+                    // Since few links have invalid characters, this tries a
+                    // strict URL-safe decode first. Leave the standard encoding
+                    // characters, so decoding will fail, as it most likely
+                    // indicates a malformed link.
+                    lazy_static! {
+                        static ref TIDY: Regex = Regex::new(r"[^A-Za-z0-9+/\-_]+").unwrap();
+                    }
+                    let data = TIDY.replace_all(data.as_bytes(), &b""[..]);
+                    URL_SAFE_NO_PAD.decode(data)?
+                }
+            };
+
             let mut buf = Vec::new();
             DeflateDecoder::new(&*compressed).read_to_end(&mut buf)?;
             Some((schema, buf))
@@ -144,8 +163,8 @@ impl LinkState {
         Ok(u.to_string())
     }
 
-    /// Serialize as MessagePack format
-    fn serialize_mp(schema: LinkSchema, data: &[u8]) -> Result<Self, DecodeError> {
+    /// Deserialize from MessagePack format.
+    fn deserialize_mp(schema: LinkSchema, data: &[u8]) -> Result<Self, DecodeError> {
         match schema {
             LinkSchema::V0 => {
                 let data: [String; 9] = rmp_serde::from_read(data)?;
@@ -188,8 +207,8 @@ impl LinkState {
         }
     }
 
-    /// Deserialize from MessagePack format
-    fn deserialize_mp(&self) -> Result<Vec<u8>, EncodeError> {
+    /// Serialize as MessagePack format.
+    fn serialize_mp(&self) -> Result<Vec<u8>, EncodeError> {
         match self.schema {
             LinkSchema::V0 => Ok(rmp_serde::to_vec(&[
                 &self.language,
@@ -288,7 +307,7 @@ mod tests {
         assert_eq!(state, LinkState::decode(url).unwrap());
         assert_eq!(url, state.encode().unwrap());
 
-        // A link with code encoded in base-64
+        // A link with code encoded in base64
         // https://codegolf.stackexchange.com/questions/249373/draw-the-progress-pride-flag/249394#249394
         let url = "https://ato.pxeger.com/run?1=NVDLTsMwALv3X9DWdBrhwCEoFYQsfZBW0BPK2i59QaKlpUt_hcsu45_4Cn6BFTFLvtiWJfvzlL_KPD8eT0O_u4LfPxmoqrzWNuKbBUJ40ZwJEUJ1LVEa3awQmRYX9KwavOiuZVWM5kgIWiOavs-eu4E-SO2UXmHFy1NHsW9IhwDB_hgkrQya3BJM3ICjeoN9QJP-besRdS6Asxdasxe8-9NEsxxDoKDDEuSGidlToHThPeriPlWMHyy1UpXYrbJ3pgRfTmzK9JyJcDoGGALqyY8Qx2vB4YElRNOGGYfZ9noXq9uvrTDlevU__3LDLw";
         let state = LinkState {
@@ -305,13 +324,39 @@ mod tests {
             input: "".into(),
             input_encoding: "utf-8".into(),
         };
-        assert_eq!(state, LinkState::decode(url).unwrap(),);
+        assert_eq!(state, LinkState::decode(url).unwrap());
         assert_eq!(url, state.encode().unwrap());
+    }
+
+    #[test]
+    fn junk_in_base64() {
+        // A link with `%C2%B8` (“¸” U+00B8 cedilla) inserted in the data,
+        // causing strict base64 decoding to fail.
+        // https://codegolf.stackexchange.com/questions/262140/xor-of-independent-bernoulli-variables/262152#262152
+        let url = "https://ato.pxeger.com/run?1=ZZFNTsMwEIXFNqewuopREvz_U6k9QW8ALAJNhKUktpK0Uk_Cgk0lBKfgInAaHDulFKRInvne87yx8vLuDuOT7Y6v9erubTfWufpoyvZhWwKzLHie4pxcG1i43m5TeEOi5XNvWmf7EXS71h1AOYDOJbXtwQaYDlhXdSmCywSYzIIVaEuXVvuyyTbF4Bozpot8vYDQy17sXFH2fXlIjQeuN92Y1r7ObOYVMzw2dqhm%C2%B8AmFMP35dPd-iAhN6D_I1CFUSQeY7PlPume8zgMM3FUHB__nfa4XkE5InRuUFvdC4IEGkVEycCTkdCM-dnm1Ma8oRVUJhMdm9EnzRLuahSP7YBcYIYRbM_tokE8LCpihG6DBBMnKOEFwhIpGWlLGwsRZxG31-KMGnEEqVoogKFR8XrDpm-OhwsAgF-QUxY_MAQTQWWCuuCPLbsiT-oG8";
+        let state = LinkState {
+            schema: LinkSchema::V1,
+            language: "python".into(),
+            options: "".into(),
+            header: "f=\\".into(),
+            header_encoding: "utf-8".into(),
+            code: "lambda i:.5-(1-2*i).prod()/2".into(),
+            code_encoding: "utf-8".into(),
+            footer: "import numpy as np\nfor L in open(0):\n i,o = map(eval,L.split(\"->\"))\n i = np.array(i)\n print(f(i),o,np.isclose(f(i),o))".into(),
+            footer_encoding: "utf-8".into(),
+            program_arguments: "".into(),
+            input: "[0.123] -> 0.123\n[0.123, 0.5] -> 0.5\n[0, 0, 1, 1, 0, 1] -> 1\n[0, 0, 1, 1, 0, 1, 0.5] -> 0.5\n[0.75, 0.75] -> 0.375\n[0.75, 0.75, 0.75] -> 0.5625\n[0.336, 0.467, 0.016, 0.469] -> 0.499350386816\n[0.469, 0.067, 0.675, 0.707] -> 0.4961100146\n[0.386, 0.224, 0.507, 0.099, 0.742] -> 0.499658027097344\n[0.796, 0.019, 0, 1, 0.217] -> 0.338830368\n[0.756, 0.924, 0.001, 0.046, 0.962, 0.001, 0.144] -> 0.6291619858201004\n".into(),
+            input_encoding: "utf-8".into(),
+        };
+        assert_eq!(state, LinkState::decode(url).unwrap());
+        let ok_url = "https://ato.pxeger.com/run?1=ZZFNTsMwEIXFNqewuopREvz_U6k9QW8ALAJNhKUktpK0Uk_Cgk0lBKfgInAaHDulFKRInvne87yx8vLuDuOT7Y6v9erubTfWufpoyvZhWwKzLHie4pxcG1i43m5TeEOi5XNvWmf7EXS71h1AOYDOJbXtwQaYDlhXdSmCywSYzIIVaEuXVvuyyTbF4Bozpot8vYDQy17sXFH2fXlIjQeuN92Y1r7ObOYVMzw2dqhmAmFMP35dPd-iAhN6D_I1CFUSQeY7PlPume8zgMM3FUHB__nfa4XkE5InRuUFvdC4IEGkVEycCTkdCM-dnm1Ma8oRVUJhMdm9EnzRLuahSP7YBcYIYRbM_tokE8LCpihG6DBBMnKOEFwhIpGWlLGwsRZxG31-KMGnEEqVoogKFR8XrDpm-OhwsAgF-QUxY_MAQTQWWCuuCPLbsiT-oG8";
+        assert_eq!(ok_url, state.encode().unwrap());
     }
 
     #[test]
     fn roundtrip_all() {
         let links = include_str!("../../tests/ato_links.txt");
+        let mut total_links = 0usize;
         let mut compression_differs = 0usize;
         for link in links.lines() {
             let state = LinkState::decode(link).unwrap();
@@ -320,7 +365,7 @@ mod tests {
                 let (data, language) = LinkState::decode_url(link).unwrap();
                 if let Some((schema, decoded_raw)) = data {
                     compression_differs += 1;
-                    let encoded_raw = state.deserialize_mp().unwrap();
+                    let encoded_raw = state.serialize_mp().unwrap();
                     assert_eq!(state.schema, schema);
                     assert_eq!(decoded_raw, encoded_raw);
                 } else if let Some(l) = language {
@@ -328,9 +373,10 @@ mod tests {
                 }
             }
             state.parse().expect("can parse state");
+            total_links += 1;
         }
         if compression_differs != 0 {
-            eprintln!("Compression differs for {compression_differs} links");
+            eprintln!("Compression differs for {compression_differs}/{total_links} links");
         }
     }
 }
