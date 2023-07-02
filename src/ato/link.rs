@@ -121,7 +121,7 @@ impl LinkState {
             // decoding. See toUint8Array in https://github.com/dankogai/js-base64/blob/34cd9344dae428adbde8084e28339a591bbdf7e5/base64.ts#L201
             let compressed = match URL_SAFE_NO_PAD.decode(&*data) {
                 Ok(data) => data,
-                Err(_) => {
+                Err(err) => {
                     // Since few links have invalid characters, this tries a
                     // strict URL-safe decode first. The standard alphabet
                     // characters are left, so decoding will fail, as it most
@@ -130,7 +130,7 @@ impl LinkState {
                         static ref TIDY: Regex = Regex::new(r"[^A-Za-z0-9+/\-_]+").unwrap();
                     }
                     let data = TIDY.replace_all(data.as_bytes(), &b""[..]);
-                    URL_SAFE_NO_PAD.decode(data)?
+                    URL_SAFE_NO_PAD.decode(data).map_err(|_| err)?
                 }
             };
 
