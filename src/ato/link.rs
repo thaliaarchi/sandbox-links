@@ -43,6 +43,8 @@ pub enum DecodeError {
     UnknownKey(String),
     #[error("multiple schema versions")]
     MultipleVersions,
+    #[error("multiple languages")]
+    MultipleLanguages,
     #[error("base64 decode: {0}")]
     Base64(#[from] base64::DecodeError),
     #[error("DEFLATE decompress: {0}")]
@@ -96,6 +98,9 @@ impl LinkState {
                 "0" => LinkSchema::V0,
                 "1" => LinkSchema::V1,
                 "L" | "l" => {
+                    if language.is_some() {
+                        return Err(DecodeError::MultipleLanguages);
+                    }
                     // See https://github.com/attempt-this-online/attempt-this-online/blob/b694efd9cfaea87d93827e33ec7f5d812a431833/frontend/pages/run.tsx#L237-L269
                     language = Some(value.into_owned());
                     continue;
