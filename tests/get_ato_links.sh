@@ -1,4 +1,5 @@
-#!/bin/sh -e
+#!/bin/bash
+set -euo pipefail
 
 if [ ! -f QueryResults.csv ]; then
   echo 'Download QueryResults.csv from https://data.stackexchange.com/codegolf/query/1722463' >&2

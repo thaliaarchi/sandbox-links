@@ -1,9 +1,3 @@
-//! A decoder and encoder for Attempt This Online code share links.
-//!
-//! Supports schema versions 0 and 1, and is based on the implementation as of
-//! commit [b1e7ff3](https://github.com/attempt-this-online/attempt-this-online/blob/b1e7ff39c15afc8194d958b8c9bbc5c3ebcd5730/frontend/lib/urls.ts)
-//! (2023-06-30).
-
 use std::io::{self, BufRead, Read};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -45,8 +39,8 @@ pub enum LinkSchema {
 pub enum DecodeError {
     #[error("URL parse: {0}")]
     Url(#[from] url::ParseError),
-    #[error("invalid key `{0}` in query string")]
-    InvalidKey(String),
+    #[error("unknown key `{0}` in query string")]
+    UnknownKey(String),
     #[error("multiple schema versions")]
     MultipleVersions,
     #[error("base64 decode: {0}")]
@@ -106,7 +100,7 @@ impl LinkState {
                     language = Some(value.into_owned());
                     continue;
                 }
-                _ => return Err(DecodeError::InvalidKey(key.into_owned())),
+                _ => return Err(DecodeError::UnknownKey(key.into_owned())),
             };
             if data.is_some() {
                 // ATO chooses the maximum schema version, when multiple are
@@ -124,9 +118,9 @@ impl LinkState {
                 Ok(data) => data,
                 Err(_) => {
                     // Since few links have invalid characters, this tries a
-                    // strict URL-safe decode first. Leave the standard encoding
-                    // characters, so decoding will fail, as it most likely
-                    // indicates a malformed link.
+                    // strict URL-safe decode first. The standard alphabet
+                    // characters are left, so decoding will fail, as it most
+                    // likely indicates a malformed link.
                     lazy_static! {
                         static ref TIDY: Regex = Regex::new(r"[^A-Za-z0-9+/\-_]+").unwrap();
                     }
@@ -368,7 +362,8 @@ mod tests {
                     let encoded_raw = state.serialize_mp().unwrap();
                     assert_eq!(state.schema, schema);
                     assert_eq!(decoded_raw, encoded_raw);
-                } else if let Some(l) = language {
+                }
+                if let Some(l) = language {
                     assert_eq!(state.language, l);
                 }
             }
