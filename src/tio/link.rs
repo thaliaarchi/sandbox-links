@@ -39,8 +39,6 @@ pub enum DecodeError {
     Url(#[from] url::ParseError),
     #[error("unknown domain: {0}")]
     UnknownDomain(String),
-    #[error("no URL fragment")]
-    NoFragment,
     #[error("multiple languages")]
     MultipleLanguages,
     #[error("field value contains `=`")]
@@ -86,7 +84,7 @@ impl LinkState {
             return Err(DecodeError::UnknownDomain("".into()));
         };
 
-        let mut fragment = u.fragment().ok_or(DecodeError::NoFragment)?;
+        let mut fragment = u.fragment().unwrap_or_default();
         if let Some((l, f)) = fragment.split_once('#') {
             if language.is_some() {
                 return Err(DecodeError::MultipleLanguages);
@@ -181,7 +179,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_format() {
+    fn roundtrip_old() {
         // A link from 2016-09-23
         // https://codegolf.stackexchange.com/questions/44680/showcase-of-languages/93737#93737
         let url = "http://slashes.tryitonline.net/#code=L-KYgy_imIM4L-KYgw&input=";
@@ -234,5 +232,23 @@ mod tests {
         state.domain = LinkDomain::TioNexus;
         assert_eq!(state, LinkState::decode_old(url).unwrap());
         assert_eq!(url, state.encode_old());
+    }
+
+    #[test]
+    fn roundtrip_all() {
+        let links = include_str!("../../tests/tio_links.txt");
+        for link in links.lines() {
+            let state = LinkState::decode_old(link).unwrap();
+            let encoded = state.encode_old();
+            if encoded != link {
+                // Language-only links like http://cubically.tryitonline.net/
+                // encode with empty fragment fields
+                if state.domain == LinkDomain::TryItOnline
+                    && Url::parse(link).unwrap().fragment().is_some()
+                {
+                    assert_eq!(encoded, link, "encoding {link}");
+                }
+            }
+        }
     }
 }
