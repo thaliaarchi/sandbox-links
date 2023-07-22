@@ -27,23 +27,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ato-links"
-version = "0.1.0"
-dependencies = [
- "base64",
- "flate2",
- "lazy_static",
- "libz-ng-sys",
- "regex",
- "reqwest",
- "rmp-serde",
- "serde",
- "serde_json",
- "thiserror",
- "url",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -757,6 +740,23 @@ name = "ryu"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f91339c0467de62360649f8d3e185ca8de4224ff281f66000de5eb2a77a79041"
+
+[[package]]
+name = "sandbox-links"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "flate2",
+ "lazy_static",
+ "libz-ng-sys",
+ "regex",
+ "reqwest",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "url",
+]
 
 [[package]]
 name = "schannel"
