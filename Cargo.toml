@@ -13,8 +13,6 @@ categories = ["encoding"]
 base64 = "0.21"
 flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 lazy_static = "1.4"
-# Compression changed in 1.1.9
-libz-ng-sys = "=1.1.8"
 regex = "1.8"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 rmp-serde = "1.1"
