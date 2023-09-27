@@ -342,8 +342,12 @@ mod tests {
     #[test]
     fn roundtrip_all() {
         let links = include_str!("../../tests/tio_links.txt");
+        let mut fail = false;
         for link in links.lines() {
-            let state = LinkState::decode_v1(link).unwrap();
+            let state = match LinkState::decode_v1(link) {
+                Ok(state) => state,
+                Err(err) => panic!("decoding `{link}`: {err}"),
+            };
             let encoded = state.encode_v1();
             if encoded != link {
                 // Language-only links like http://cubically.tryitonline.net/
@@ -354,11 +358,15 @@ mod tests {
                     continue;
                 }
                 if link.replace("+", "-") == encoded {
-                    println!("Differ by `+`: {link} encodes to {encoded}");
+                    println!("Differ by `+`: `{link}` encodes to `{encoded}`");
                     continue;
                 }
-                assert_eq!(encoded, link, "encoding {link}");
+                println!("encoding `{link}`: got `{encoded}` from {state:?}");
+                fail = true;
             }
+        }
+        if fail {
+            panic!("failed");
         }
     }
 }

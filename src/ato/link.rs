@@ -358,8 +358,14 @@ mod tests {
         let mut total_links = 0usize;
         let mut compression_differs = 0usize;
         for link in links.lines() {
-            let state = LinkState::decode(link).unwrap();
-            let encoded = state.encode().unwrap();
+            let state = match LinkState::decode(link) {
+                Ok(state) => state,
+                Err(err) => panic!("decoding `{link}`: {err}"),
+            };
+            let encoded = match state.encode() {
+                Ok(encoded) => encoded,
+                Err(err) => panic!("encoding `{link}`: {err}"),
+            };
             if encoded != link {
                 let (data, language) = LinkState::decode_url(link).unwrap();
                 if let Some((schema, decoded_raw)) = data {

@@ -8,7 +8,10 @@ fi
 
 (
   rg -o 'https?://([a-z0-9]+\.)*(tio\.run|tryitonline\.net)[^"'\''<)]+' QueryResults.csv |
-    sed 's/&amp;/\&/' &&
+    sed '
+      s/&amp;/\&/g
+      s/%23/#/g
+    ' &&
   (
     curl 'https://web.archive.org/web/timemap/?url=tio.run&collapse=digest&matchType=prefix&output=json&limit=10000' &&
     curl 'https://web.archive.org/web/timemap/?url=tryitonline.net&collapse=digest&matchType=prefix&output=json&limit=10000'
